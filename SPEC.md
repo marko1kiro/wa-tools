@@ -165,3 +165,30 @@ pihak ketiga (kecuali gateway AI yang user tunjuk sendiri).
    3. wa-engine: koneksi QR + sync pesan → 4. Inbox/Chat data asli →
    5. Jadwal + antrean kirim → 6. Draf AI + Pengaturan →
    7. Home data asli → 8. Uji end-to-end di PC user → 9. Serah terima.
+
+## 13. Deployment Windows (kayak 9Router — keputusan user 2026-11-02)
+
+Target: wa-engine hidup terus di PC user, auto-start pas laptop nyala,
+jalan di background, tahan banting. Bukan console yang harus dibuka manual.
+
+1. **Windows Service via NSSM (utama).** Service `wa-tools-engine`:
+   Automatic (Delayed Start) agar start setelah network siap; restart
+   otomatis saat crash (dengan jeda + throttle); jalan sebagai akun user
+   (BUKAN SYSTEM) supaya file auth milik user dan dashboard bisa
+   mengontrolnya; stdout/stderr ke file log berotasi.
+2. **Health endpoint.** `GET /health` di wa-engine: status koneksi,
+   uptime, disconnect terakhir. Dipakai dashboard + watchdog.
+3. **Watchdog internal (fail-fast).** Kalau soket mati melewati ambang
+   tanpa reconnect sukses, proses exit sengaja → NSSM me-restart-nya.
+   Jangan gantung hidup tapi mati suri.
+4. **Single-instance lock.** Proses kedua dilarang start kalau satu sudah
+   jalan — cegah dua proses rebutan satu sesi Baileys.
+5. **Tray companion.** Ikon di system tray taskbar + menu: status koneksi,
+   buka dashboard, restart engine, berhenti. Engine juga terlihat di
+   Services/Task Manager sebagai service biasa.
+6. **Install & update.** Script install service (PowerShell) + README.
+   Install butuh hak admin SEKALI; setelah itu jalan tanpa admin.
+   Update: `git pull` lalu restart service (tombol di dashboard / menu
+   tray).
+7. **Fallback bila NSSM ditolak user:** Task Scheduler "At log on" +
+   script start. Service tetap default karena jalan tanpa login.
