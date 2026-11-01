@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { BottomNav, Sidebar } from "@/lib/nav";
 
 export const metadata: Metadata = {
   title: "WhatsApp Tools (local)",
@@ -13,7 +14,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="id">
-      <body>{children}</body>
+      <body className="bg-zinc-100 text-zinc-900">
+        <Sidebar />
+        <div className="pb-14 md:pb-0 md:pl-[70px]">
+          <main className="mx-auto max-w-6xl p-4">{children}</main>
+        </div>
+        <BottomNav />
+      </body>
     </html>
   );
 }
