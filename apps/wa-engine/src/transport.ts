@@ -51,6 +51,24 @@ export interface TransportControl {
   getPhone(): string | null;
   onMessage(handler: MessageHandler): void;
   onStateChange(handler: StateHandler): void;
+  /** epoch ms disconnect terakhir (apa pun penyebabnya), null bila belum pernah. */
+  getLastDisconnectAt?(): number | null;
+  /**
+   * true bila watchdog boleh fail-fast: pernah connected sejak proses
+   * jalan dan belum ada stop manual. Opsional supaya fake transport
+   * di test lama tetap kompatibel.
+   */
+  isWatchdogArmed?(): boolean;
+  /**
+   * Minta kode pairing 8 digit (Baileys requestPairingCode, SPEC §3.1).
+   * Dipakai bila QR bermasalah. `phone` sudah dinormalisasi server:
+   * digit dengan kode negara, tanpa `+`. Hanya valid bila BELUM
+   * terdaftar (creds.registered false); bila sudah terdaftar, throw
+   * Error("already_registered"); bila sudah connected, throw
+   * Error("already_connected"). Setelah user memasukkan kode di HP,
+   * lifecycle SAMA seperti via QR (sesi tersimpan, reconnect otomatis).
+   */
+  requestPairingCode?(phone: string): Promise<string>;
 }
 
 function emitState(
@@ -183,6 +201,19 @@ export class BaileysTransport implements WaTransport, TransportControl {
   private readonly authDir: string;
   private readonly messageHandlers: MessageHandler[] = [];
   private readonly stateHandlers: StateHandler[] = [];
+  /** epoch ms disconnect terakhir (untuk /health + watchdog). */
+  private lastDisconnectAt: number | null = null;
+  /**
+   * true sejak satu koneksi sukses, dilucuti oleh stop manual.
+   * Dipakai watchdog (SPEC §13.3): hanya proses yang pernah hidup
+   * lalu mati yang boleh di-restart paksa.
+   */
+  private watchdogArmed = false;
+  /**
+   * null = belum diketahui (connect belum pernah jalan);
+   * true = sesi sudah terdaftar (QR/kode tidak diperlukan lagi).
+   */
+  private registered: boolean | null = null;
 
   constructor(options: BaileysTransportOptions = {}) {
     // Sengaja TIDAK connect di sini. connect() eksplisit saja.
@@ -203,6 +234,14 @@ export class BaileysTransport implements WaTransport, TransportControl {
 
   getPhone(): string | null {
     return this.phone;
+  }
+
+  getLastDisconnectAt(): number | null {
+    return this.lastDisconnectAt;
+  }
+
+  isWatchdogArmed(): boolean {
+    return this.watchdogArmed;
   }
 
   onMessage(handler: MessageHandler): void {
@@ -233,6 +272,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
 
   private async doConnect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
+    // Catat status registrasi: menentukan apakah pairing code valid.
+    this.registered = state.creds.registered === true;
     const sock = makeWASocket({
       auth: state,
       // QR tidak di-print ke terminal; UI mengambilnya via GET /qr.
@@ -255,6 +296,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
         this.phone = rawId
           ? rawId.split("@")[0]?.split(":")[0] ?? rawId
           : null;
+        // Koneksi sukses (lagi) -> watchdog bersenjata kembali.
+        this.watchdogArmed = true;
         this.setState("connected");
       }
       if (connection === "close") {
@@ -264,6 +307,10 @@ export class BaileysTransport implements WaTransport, TransportControl {
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
+        // Catat untuk /health + watchdog, SEBELUM setState.
+        this.lastDisconnectAt = Date.now();
+        // Stop manual melucuti watchdog; putus tak terduga mempersenjatai.
+        this.watchdogArmed = !this.stopped;
         this.setState("disconnected");
         // Reconnect otomatis (SPEC §3.1), kecuali logout eksplisit
         // atau stop() sudah dipanggil.
@@ -298,12 +345,45 @@ export class BaileysTransport implements WaTransport, TransportControl {
     const sock = this.sock;
     this.sock = null;
     this.qr = null;
+    // Stop manual: catat waktu putus untuk /health, tapi LUCUTI
+    // watchdog (penghentian disengaja bukan crash).
+    this.lastDisconnectAt = Date.now();
+    this.watchdogArmed = false;
     try {
       sock?.end(undefined);
     } catch {
       // Socket sudah mati: abaikan.
     }
     this.setState("disconnected");
+  }
+
+  /**
+   * Jalur fallback bila QR bermasalah (SPEC §3.1). `phone` = digit
+   * dengan kode negara, tanpa `+` (sudah dinormalisasi server).
+   * Bila socket belum ada, connect() dulu (membuat socket + mulai
+   * pairing); bila socket sudah ada (QR sedang menunggu), pakai
+   * socket itu — jangan buat socket kedua.
+   */
+  async requestPairingCode(phone: string): Promise<string> {
+    if (this.isConnected()) {
+      throw new Error("already_connected");
+    }
+    if (!this.sock) {
+      await this.connect();
+    }
+    if (this.registered === true) {
+      throw new Error("already_registered");
+    }
+    if (!this.sock) {
+      throw new Error("not_started");
+    }
+    const code = await this.sock.requestPairingCode(phone);
+    // Kode diminta -> user sedang dalam proses pairing, sama seperti
+    // menunggu scan QR; event "open" nanti yang mengubah ke connected.
+    if (!this.isConnected()) {
+      this.setState("pairing");
+    }
+    return code;
   }
 
   async sendMessage(jid: string, text: string): Promise<{ id: string }> {
@@ -334,6 +414,9 @@ export class MockTransport implements WaTransport, TransportControl {
   private readonly stateHandlers: StateHandler[] = [];
   readonly sent: MockSentMessage[] = [];
   private counter = 0;
+  private lastDisconnectAt: number | null = null;
+  private watchdogArmed = false;
+  private pairingCodeCounter = 0;
 
   isConnected(): boolean {
     return this.state === "connected";
@@ -353,6 +436,14 @@ export class MockTransport implements WaTransport, TransportControl {
     return null;
   }
 
+  getLastDisconnectAt(): number | null {
+    return this.lastDisconnectAt;
+  }
+
+  isWatchdogArmed(): boolean {
+    return this.watchdogArmed;
+  }
+
   onMessage(handler: MessageHandler): void {
     this.messageHandlers.push(handler);
   }
@@ -364,12 +455,54 @@ export class MockTransport implements WaTransport, TransportControl {
   async connect(): Promise<void> {
     if (this.state === "connected") return;
     this.state = "connected";
+    this.watchdogArmed = true;
     emitState(this.stateHandlers, "connected");
   }
 
   async disconnect(): Promise<void> {
+    // Stop manual: lucuti watchdog (sama seperti BaileysTransport).
     this.state = "disconnected";
+    this.lastDisconnectAt = Date.now();
+    this.watchdogArmed = false;
     emitState(this.stateHandlers, "disconnected");
+  }
+
+  /**
+   * Simulasikan putus TAK TERDUGA (bukan stop manual): watchdog tetap
+   * bersenjata. Dipakai test watchdog; tidak ada efek jaringan.
+   */
+  simulateUnexpectedDisconnect(): void {
+    this.state = "disconnected";
+    this.lastDisconnectAt = Date.now();
+    this.watchdogArmed = true;
+    emitState(this.stateHandlers, "disconnected");
+  }
+
+  /**
+   * Mock requestPairingCode: dari idle langsung ke "pairing" (tidak
+   * ke "connected") supaya alur test mirrors Baileys asli — user
+   * memasukkan kode di HP dulu, baru connected via
+   * simulatePairingComplete(). Kode 8 digit deterministik per
+   * permintaan (10000001, 10000002, ...) supaya "minta kode baru"
+   * bisa dites (kode berubah).
+   */
+  async requestPairingCode(_phone: string): Promise<string> {
+    if (this.isConnected()) {
+      throw new Error("already_connected");
+    }
+    this.pairingCodeCounter += 1;
+    const code = String(10_000_000 + this.pairingCodeCounter);
+    this.state = "pairing";
+    emitState(this.stateHandlers, "pairing");
+    return code;
+  }
+
+  /** Simulasikan user memasukkan kode di HP -> koneksi open. */
+  simulatePairingComplete(): void {
+    if (this.state !== "pairing") return;
+    this.state = "connected";
+    this.watchdogArmed = true;
+    emitState(this.stateHandlers, "connected");
   }
 
   async sendMessage(jid: string, text: string): Promise<{ id: string }> {

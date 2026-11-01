@@ -25,6 +25,8 @@ export interface EngineServerOptions {
   autoSync?: boolean;
   /** Override queuePaused: boolean atau getter (mis. dari modul queue). */
   queuePaused?: boolean | (() => boolean);
+  /** epoch ms proses mulai (untuk uptime); default saat server dibuat. */
+  startedAt?: number;
 }
 
 export interface EngineStatus {
@@ -35,15 +37,52 @@ export interface EngineStatus {
   queuePaused: boolean;
 }
 
+/**
+ * Payload GET /health (SPEC §13.2): dipakai dashboard (via /api/status)
+ * dan watchdog eksternal. Kompatibel ke belakang: field lama
+ * {ok, service} tetap ada, field baru hanya ditambahkan.
+ */
+export interface EngineHealth {
+  ok: boolean;
+  service: "wa-engine";
+  state: EngineState;
+  connected: boolean;
+  phone: string | null;
+  mock: boolean;
+  queuePaused: boolean;
+  /** detik sejak proses mulai (bilangan bulat). */
+  uptimeSeconds: number;
+  /** ISO 8601 saat proses mulai. */
+  startedAt: string;
+  /** ISO 8601 disconnect terakhir, null bila belum pernah putus. */
+  lastDisconnectAt: string | null;
+}
+
 export interface EngineServerHandle {
   server: http.Server;
   getStatus(): EngineStatus;
+  getHealth(): EngineHealth;
 }
 
 const SendBodySchema = z.object({
   jid: z.string().min(1, "jid wajib diisi"),
   body: z.string().min(1, "body wajib diisi").max(65536),
 });
+
+const PairingCodeBodySchema = z.object({
+  phone: z.string().min(1, "phone wajib diisi"),
+});
+
+/**
+ * Normalisasi nomor HP untuk requestPairingCode (SPEC §3.1): buang
+ * `+`, spasi, strip, titik, kurung, lalu validasi digit dengan kode
+ * negara (8-15 digit, batas E.164). Gagal -> null (bukan throw).
+ * Contoh: "+62 812-3456-789" -> "628123456789".
+ */
+export function normalizePairingPhone(input: string): string | null {
+  const digits = input.replace(/[+\s\-().]/g, "");
+  return /^\d{8,15}$/.test(digits) ? digits : null;
+}
 
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -102,6 +141,20 @@ export function createEngineServer(
     };
   };
 
+  const startedAtMs = options.startedAt ?? Date.now();
+  const getHealth = (): EngineHealth => {
+    const status = getStatus();
+    const lastMs = transport.getLastDisconnectAt?.() ?? null;
+    return {
+      ok: true,
+      service: "wa-engine",
+      ...status,
+      uptimeSeconds: Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)),
+      startedAt: new Date(startedAtMs).toISOString(),
+      lastDisconnectAt: lastMs === null ? null : new Date(lastMs).toISOString(),
+    };
+  };
+
   // Pesan masuk -> SQLite (SPEC §3.2). Gagal sync hanya di-log,
   // tidak meruntuhkan server maupun transport.
   if (options.autoSync !== false && transport.onMessage) {
@@ -122,7 +175,7 @@ export function createEngineServer(
 
       try {
         if (method === "GET" && url.pathname === "/health") {
-          sendJson(res, 200, { ok: true, service: "wa-engine" });
+          sendJson(res, 200, getHealth());
           return;
         }
 
@@ -159,6 +212,69 @@ export function createEngineServer(
         if (method === "POST" && url.pathname === "/stop") {
           if (transport.disconnect) await transport.disconnect();
           sendJson(res, 200, getStatus());
+          return;
+        }
+
+        if (method === "POST" && url.pathname === "/pairing-code") {
+          // Jalur fallback bila QR bermasalah (SPEC §3.1).
+          // FAIL-CLOSED seperti /send: sudah connected -> 409.
+          if (transport.isConnected()) {
+            sendJson(res, 409, { error: "already_connected" });
+            return;
+          }
+          let raw: string;
+          try {
+            raw = await readBody(req);
+          } catch {
+            sendJson(res, 413, { error: "body_too_large" });
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = raw ? JSON.parse(raw) : null;
+          } catch {
+            sendJson(res, 400, { error: "invalid_json" });
+            return;
+          }
+          const result = PairingCodeBodySchema.safeParse(parsed);
+          if (!result.success) {
+            sendJson(res, 400, {
+              error: "validation_failed",
+              issues: result.error.issues.map((i) => ({
+                path: i.path.join("."),
+                message: i.message,
+              })),
+            });
+            return;
+          }
+          const phone = normalizePairingPhone(result.data.phone);
+          if (phone === null) {
+            sendJson(res, 400, {
+              error: "invalid_phone",
+              hint: "nomor harus digit dengan kode negara, tanpa + (mis. 62812xxxxxxx)",
+            });
+            return;
+          }
+          if (!transport.requestPairingCode) {
+            sendJson(res, 501, { error: "pairing_code_unsupported" });
+            return;
+          }
+          try {
+            const code = await transport.requestPairingCode(phone);
+            sendJson(res, 200, { code, phone, state: getStatus().state });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "";
+            if (msg === "already_connected" || msg === "already_registered") {
+              sendJson(res, 409, { error: msg });
+              return;
+            }
+            console.error(
+              "[wa-engine] requestPairingCode gagal:",
+              err instanceof Error ? err.message : err,
+            );
+            sendJson(res, 502, { error: "pairing_failed" });
+            return;
+          }
           return;
         }
 
@@ -234,7 +350,7 @@ export function createEngineServer(
     })();
   });
 
-  return { server, getStatus };
+  return { server, getStatus, getHealth };
 }
 
 /** Buat + listen server; port 0 = ephemeral (dipakai test). */

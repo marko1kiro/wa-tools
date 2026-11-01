@@ -7,7 +7,28 @@ type StatusView = {
   waState: string | null;
   phone: string | null;
   queuePaused: boolean;
+  uptimeSeconds: number | null;
+  lastDisconnectAt: string | null;
 };
+
+/** Format detik uptime -> "45d", "3j 12m", "2h 5j", "1h". */
+function formatUptime(seconds: number | null): string {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `${seconds}d`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}j ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}h ${h % 24}j`;
+}
+
+function formatDisconnectAt(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  return new Date(t).toLocaleString("id-ID");
+}
 
 const DEFAULTS: Record<string, string> = {
   gateway_base_url: "http://localhost:20128/v1",
@@ -22,6 +43,13 @@ export default function PengaturanClient() {
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState(false);
   const [qrBroken, setQrBroken] = useState(false);
+  // Kode pairing fallback (SPEC §3.1): BUKAN SMS OTP — kode ini
+  // dimasukkan user di HP (Perangkat Tertaut -> Tautkan dengan nomor
+  // telepon). Berlaku singkat; minta baru bila kedaluwarsa.
+  const [pairingPhone, setPairingPhone] = useState("");
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({ ...DEFAULTS });
   const [notice, setNotice] = useState<string | null>(null);
   // Pause GLOBAL antrean kirim (kontrak worker lain: settings key
@@ -39,6 +67,10 @@ export default function PengaturanClient() {
             waState: typeof d.waState === "string" ? d.waState : null,
             phone: typeof d.phone === "string" ? d.phone : null,
             queuePaused: d.queuePaused === true,
+            uptimeSeconds:
+              typeof d.uptimeSeconds === "number" ? d.uptimeSeconds : null,
+            lastDisconnectAt:
+              typeof d.lastDisconnectAt === "string" ? d.lastDisconnectAt : null,
           });
         } else {
           setStatusError(true);
@@ -63,6 +95,65 @@ export default function PengaturanClient() {
       })
       .catch(() => undefined);
   }, []);
+
+  async function requestPairingCode(e: React.FormEvent) {
+    e.preventDefault();
+    setPairingError(null);
+    setPairingBusy(true);
+    try {
+      const res = await fetch("/api/pairing-code", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phone: pairingPhone }),
+      });
+      const data = (await res.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      if (!res.ok || typeof data?.code !== "string") {
+        const err = typeof data?.error === "string" ? data.error : "";
+        setPairingError(
+          err === "invalid_phone"
+            ? "Nomor tidak valid — pakai digit dengan kode negara, tanpa + (mis. 62812xxxxxxx)."
+            : err === "already_connected"
+              ? "WhatsApp sudah terhubung — tidak perlu kode pairing."
+              : err === "already_registered"
+                ? "Akun ini sudah terdaftar — pakai sesi yang ada (atau scan QR)."
+                : err === "engine_unreachable" || err === "engine_unconfigured"
+                  ? "Engine tidak bisa dihubungi — pastikan wa-engine jalan."
+                  : "Gagal meminta kode pairing. Coba lagi.",
+        );
+        return;
+      }
+      setPairingCode(data.code);
+      // Segarkan status supaya kartu menampilkan state "pairing".
+      fetch("/api/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d: unknown) => {
+          if (d && typeof d === "object") {
+            const s = d as Record<string, unknown>;
+            setStatus((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    waState:
+                      typeof s.waState === "string"
+                        ? s.waState
+                        : typeof s.state === "string"
+                          ? s.state
+                          : prev.waState,
+                  }
+                : prev,
+            );
+          }
+        })
+        .catch(() => undefined);
+    } catch {
+      setPairingError("Gagal menghubungi server.");
+    } finally {
+      setPairingBusy(false);
+    }
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -125,6 +216,14 @@ export default function PengaturanClient() {
               <dt className="text-zinc-500">Antrean kirim:</dt>
               <dd>{status.queuePaused ? "dijeda (fail-closed)" : "aktif"}</dd>
             </div>
+            <div className="flex gap-2">
+              <dt className="text-zinc-500">Uptime engine:</dt>
+              <dd>{formatUptime(status.uptimeSeconds)}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-zinc-500">Terakhir putus:</dt>
+              <dd>{formatDisconnectAt(status.lastDisconnectAt)}</dd>
+            </div>
           </dl>
         )}
         <label className="mt-4 flex items-center gap-2 text-sm">
@@ -157,6 +256,43 @@ export default function PengaturanClient() {
               onError={() => setQrBroken(true)}
               className="h-56 w-56 rounded-lg border object-contain"
             />
+          )}
+        </div>
+        <div className="mt-4 border-t pt-4">
+          <h3 className="mb-1 text-sm font-semibold">Gunakan kode pairing</h3>
+          <p className="mb-2 text-xs text-zinc-500">
+            Bila QR bermasalah. Ini BUKAN SMS OTP — kode dimasukkan di HP:
+            WhatsApp → Perangkat Tertaut → Tautkan dengan nomor telepon.
+          </p>
+          <form onSubmit={(e) => void requestPairingCode(e)} className="flex flex-wrap items-center gap-2">
+            <input
+              type="tel"
+              value={pairingPhone}
+              onChange={(e) => setPairingPhone(e.target.value)}
+              placeholder="62812xxxxxxx"
+              className="w-48 rounded-lg border px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={pairingBusy || pairingPhone.trim().length === 0}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-50"
+            >
+              {pairingBusy ? "Meminta…" : pairingCode ? "Minta kode baru" : "Minta kode"}
+            </button>
+          </form>
+          {pairingError && (
+            <p className="mt-2 text-sm text-red-700">{pairingError}</p>
+          )}
+          {pairingCode && (
+            <div className="mt-3">
+              <p className="font-mono text-4xl font-bold tracking-[0.2em]">
+                {pairingCode}
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Kode berlaku singkat — segera masukkan di HP. Bila
+                kedaluwarsa, tekan “Minta kode baru”.
+              </p>
+            </div>
           )}
         </div>
       </section>
