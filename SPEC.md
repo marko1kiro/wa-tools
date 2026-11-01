@@ -31,7 +31,13 @@ pihak ketiga (kecuali gateway AI yang user tunjuk sendiri).
 
 ## 3. Scope Fase 1 (yang dibangun sekarang)
 
-1. **Koneksi WA** — pairing QR (Baileys), status koneksi realtime,
+1. **Koneksi WA** — pairing QR (Baileys) + **fallback kode pairing
+   8 digit** (`requestPairingCode`) bila QR bermasalah: user memasukkan
+   nomor HP (kode negara, tanpa `+`) di dashboard → engine meminta kode
+   pairing → kode tampil di dashboard → user memasukkannya di HP
+   (WhatsApp → Perangkat Tertaut → Tautkan dengan nomor telepon).
+   Setelah tertaut (via QR maupun kode), sesi tersimpan sama dan
+   reconnect otomatis tanpa QR/kode lagi. Status koneksi realtime,
    reconnect otomatis, tampilkan nomor yang terhubung.
 2. **Inbox + Chat** — daftar chat + isi percakapan dari data asli,
    mengikuti layout mockup yang sudah di-approve (replica WA Web +
@@ -162,11 +168,11 @@ pihak ketiga (kecuali gateway AI yang user tunjuk sendiri).
 ## 12. Urutan implementasi
 
 1. SPEC ini (selesai) → 2. Scaffold proyek + verifikasi build →
-   3. wa-engine: koneksi QR + sync pesan → 4. Inbox/Chat data asli →
+   3. wa-engine: koneksi QR + kode pairing fallback + sync pesan → 4. Inbox/Chat data asli →
    5. Jadwal + antrean kirim → 6. Draf AI + Pengaturan →
    7. Home data asli → 8. Uji end-to-end di PC user → 9. Serah terima.
 
-## 13. Deployment Windows (kayak 9Router — keputusan user 2026-11-02)
+## 13. Deployment Windows (kayak 9Router — keputusan user 2026-11-02, SEMUA LAPISAN APPROVED user 2026-11-02)
 
 Target: wa-engine hidup terus di PC user, auto-start pas laptop nyala,
 jalan di background, tahan banting. Bukan console yang harus dibuka manual.
@@ -192,3 +198,28 @@ jalan di background, tahan banting. Bukan console yang harus dibuka manual.
    tray).
 7. **Fallback bila NSSM ditolak user:** Task Scheduler "At log on" +
    script start. Service tetap default karena jalan tanpa login.
+
+### Implementasi (2026-11-02, sudah di repo)
+
+- **Lock:** `apps/wa-engine/src/lock.ts` — file `data/wa-engine.lock`
+  (env `WA_ENGINE_LOCK_FILE`); proses kedua exit kode 2; lock stale
+  (PID mati) diambil alih; isi bukan PID ditolak fail-closed.
+- **Watchdog:** `apps/wa-engine/src/watchdog.ts` — ambang default 120
+  detik (env `WATCHDOG_DEAD_MS`, `0` = nonaktif), cek tiap 15 detik;
+  hanya bersenjata setelah satu koneksi sukses; stop manual melucuti;
+  exit(1) supaya NSSM restart.
+- **Health:** `GET /health` mengembalikan `state`, `connected`,
+  `phone`, `mock`, `queuePaused`, `uptimeSeconds`, `startedAt`,
+  `lastDisconnectAt` (dipakai dashboard via `/api/status` → kartu
+  Pengaturan menampilkan uptime + terakhir putus).
+- **Service:** `apps/wa-engine/scripts/install-service.ps1` (butuh admin
+  sekali; akun user via ObjectName, bukan SYSTEM; Delayed Start;
+  restart delay 10 detik; log `logs/wa-engine.{out,err}.log` rotasi
+  10 MB; exit 2 tidak di-restart) + `uninstall-service.ps1`.
+- **Tray:** `apps/wa-engine/scripts/tray-companion.ps1` (PowerShell +
+  WinForms, polling `/health` 10 detik; menu: status, Buka Dashboard,
+  Restart Engine, Berhenti Engine, Keluar). Ditulis untuk Windows,
+  BELUM teruji dari VM Linux — verifikasi di PC user; alternatif:
+  dashboard Pengaturan + `services.msc`.
+- **Update:** `git pull` dari root repo lalu
+  `Restart-Service -Name wa-tools-engine` (butuh shell elevated).
