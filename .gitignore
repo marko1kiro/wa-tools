@@ -1,0 +1,28 @@
+# Dependencies & build output
+node_modules/
+.next/
+dist/
+out/
+
+# Database SQLite lokal (dibuat saat runtime, bukan artefak repo)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+
+# Environment (kecuali .env.example yang memang untuk dicontoh)
+.env
+.env.local
+.env.*.local
+
+# Folder auth Baileys — session WA bersifat rahasia setara password (SPEC §8).
+# JANGAN PERNAH di-share atau di-commit.
+apps/wa-engine/auth/
+apps/wa-engine/.auth/
+**/baileys-auth/
+
+# OS & log
+.DS_Store
+Thumbs.db
+*.log
