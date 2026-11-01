@@ -4,10 +4,12 @@ Dashboard local untuk membantu kerja dan aktivitas harian di WhatsApp.
 Spesifikasi mengikat: [`SPEC.md`](./SPEC.md). Referensi UI: mockup
 `preview-desain-ui-whatsapp-tools` (UI v1 APPROVED 2026-11-02).
 
-> **Status: SCAFFOLD SAJA.** Belum ada fitur: tidak ada koneksi WhatsApp
-> sungguhan, tidak ada halaman fungsional, tidak ada pengiriman pesan.
-> `apps/wa-engine` dan halaman web saat ini hanya placeholder. Implementasi
-> mengikuti urutan SPEC §12.
+> **Status: FASE 1 TERIMPLEMENTASI.** Koneksi WA (Baileys, default mode
+> mock yang aman), inbox/chat data asli, pesan terjadwal + antrean kirim,
+> draf balasan AI (3 nada, selalu draft), Home data asli, dan Pengaturan.
+> Yang diparkir (SPEC §4) belum dibangun: media handler, analisa, laporan,
+> Studio Media — halamannya tampil "segera hadir".
+> Implementasi mengikuti urutan SPEC §12.
 
 ## Struktur
 
@@ -64,7 +66,7 @@ pnpm typecheck   # typecheck semua package (setelah build pertama)
   yang terdeteksi automasi (SPEC §8). Pengaman default dibuat konservatif.
 - Folder auth Baileys (`apps/wa-engine/auth/`) bersifat rahasia setara
   password dan sudah masuk `.gitignore` — jangan pernah di-share.
-- **Tidak ada repo GitHub yang dibuat** untuk proyek ini tanpa perintah
-  eksplisit user. Kode tinggal di folder ini sampai diputuskan sebaliknya.
+- Repo GitHub: `marko1kiro/wa-tools` (private). User tinggal `git pull`
+  dari PC lokal untuk update.
 - Media handler **DIPARKIR** (SPEC §4): belum ada tabel media, dan pesan
   media di Fase 1 tampil sebagai placeholder sampai dibuka lagi.
