@@ -16,10 +16,15 @@ import {
 
 // Entry point wa-engine (SPEC §5 + §13 deployment).
 // - Mode DEFAULT = MOCK (aman): tidak ada koneksi WhatsApp sungguhan,
-//   tidak ada QR asli, tidak ada pesan sungguhan.
-// - Transport real (Baileys) hanya dipakai bila WA_ENGINE_MOCK=0, DAN
-//   koneksi baru jalan saat endpoint POST /start dipanggil — modul ini
-//   sendiri TIDAK PERNAH auto-connect.
+//   tidak ada QR asli, tidak ada pesan sungguhan. Mode mock tetap
+//   manual via POST /start (tidak auto-connect).
+// - Mode REAL (WA_ENGINE_MOCK=0): engine AUTO-CONNECT saat boot supaya
+//   perilaku service "kayak 9Router" terpenuhi — habis laptop restart,
+//   engine langsung jaga koneksi + reconnect tanpa menunggu dashboard
+//   memanggil /start. Gagal auto-connect awal HANYA di-log (state tetap
+//   idle/disconnected); watchdog hanya bersenjata setelah pernah
+//   connected, jadi tidak ada restart loop dari sini. POST /start tetap
+//   ada untuk restart manual.
 // - Queue runner di-wire di sini: membaca settings dari tabel settings
 //   tiap item (toggle pause berlaku tanpa restart), dan /status
 //   melaporkan queuePaused dari cache + status koneksi.
@@ -100,6 +105,18 @@ async function main(): Promise<void> {
     void refreshSettingsCache();
   }, 15_000);
   cacheTimer.unref();
+
+  // Auto-connect HANYA mode real (SPEC §3.1/§13): fire-and-forget,
+  // gagal awal hanya di-log — JANGAN await + throw di sini, karena
+  // main().catch akan exit(1) dan NSSM me-restart berulang.
+  if (!MOCK && transport.connect) {
+    void transport.connect().catch((err: unknown) => {
+      console.error(
+        "[wa-engine] auto-connect awal gagal (coba lagi via POST /start):",
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
 
   // Watchdog: cek berkala, exit(1) bila soket mati melewati ambang.
   // Timer di-unref supaya tidak menahan proses sendirian.

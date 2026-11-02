@@ -1,4 +1,5 @@
 import http from "node:http";
+import QRCode from "qrcode";
 import { z } from "zod";
 import { db } from "@wa-tools/db";
 import { saveOutgoingMessage, syncIncomingMessage } from "./sync.js";
@@ -99,6 +100,31 @@ function sendJson(
   res.end(body);
 }
 
+function sendPng(res: http.ServerResponse, png: Buffer): void {
+  res.writeHead(200, {
+    "content-type": "image/png",
+    "content-length": png.length,
+    "cache-control": "no-store",
+  });
+  res.end(png);
+}
+
+/**
+ * Detail error yang aman untuk UI: pesan Baileys + statusCode bila ada,
+ * dipotong 300 karakter. TIDAK PERNAH berisi kredensial/session — pesan
+ * error Baileys hanya kelas kegagalan (mis. socket tertutup, timeout).
+ */
+export function baileysErrorDetail(err: unknown): string {
+  const msg = err instanceof Error ? err.message : "";
+  const code = (
+    err as { output?: { statusCode?: number } } | null | undefined
+  )?.output?.statusCode;
+  const base = msg ? msg : "Baileys error tanpa pesan";
+  const withCode =
+    typeof code === "number" ? `${base} (status ${code})` : base;
+  return withCode.slice(0, 300);
+}
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -185,13 +211,26 @@ export function createEngineServer(
         }
 
         if (method === "GET" && url.pathname === "/qr") {
-          const status = getStatus();
-          sendJson(res, 200, {
-            state: status.state,
-            qr: transport.getQr?.() ?? null,
-            mock,
-            phone: status.phone,
-          });
+          // QR sebagai PNG beneran (SPEC §3.1): string QR mentah Baileys
+          // BUKAN gambar — dashboard lama memasang JSON ini ke <img>
+          // sehingga QR tidak pernah tampil. Tanpa QR aktif -> 404
+          // {error:"no_qr"} supaya <img onError> dashboard menampilkan
+          // pesan qrBroken yang sudah ada.
+          const qr = transport.getQr?.() ?? null;
+          if (!qr) {
+            sendJson(res, 404, { error: "no_qr" });
+            return;
+          }
+          try {
+            const png = await QRCode.toBuffer(qr, {
+              type: "png",
+              width: 512,
+              margin: 2,
+            });
+            sendPng(res, png);
+          } catch {
+            sendJson(res, 500, { error: "qr_render_failed" });
+          }
           return;
         }
 
@@ -272,7 +311,21 @@ export function createEngineServer(
               "[wa-engine] requestPairingCode gagal:",
               err instanceof Error ? err.message : err,
             );
-            sendJson(res, 502, { error: "pairing_failed" });
+            // Detail aman diteruskan ke UI (bukan pairing_failed generik
+            // saja): socket_not_ready punya error sendiri; sisanya tetap
+            // 502 pairing_failed tapi dengan detail Baileys.
+            if (msg === "socket_not_ready") {
+              sendJson(res, 502, {
+                error: "socket_not_ready",
+                detail:
+                  "Socket WhatsApp belum siap (handshake belum selesai dalam 15 detik). Coba lagi.",
+              });
+              return;
+            }
+            sendJson(res, 502, {
+              error: "pairing_failed",
+              detail: baileysErrorDetail(err),
+            });
             return;
           }
           return;

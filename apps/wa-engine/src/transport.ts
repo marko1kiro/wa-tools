@@ -71,6 +71,64 @@ export interface TransportControl {
   requestPairingCode?(phone: string): Promise<string>;
 }
 
+/** Timeout tunggu socket Baileys ready sebelum requestPairingCode. */
+export const PAIRING_READY_TIMEOUT_MS = 15_000;
+
+/**
+ * Sinyal readiness socket (perbaikan race requestPairingCode, SPEC §3.1).
+ * `connection.update` pertama adalah bukti handshake berjalan — channel
+ * sudah hidup dan bisa menerima query pairing. Tanpa sinyal ini,
+ * requestPairingCode yang ditembak langsung setelah makeWASocket akan
+ * gagal karena handshake WebSocket belum selesai.
+ */
+export class ReadySignal {
+  private seen = false;
+  private waiters: Array<() => void> = [];
+
+  isSeen(): boolean {
+    return this.seen;
+  }
+
+  markSeen(): void {
+    if (this.seen) return;
+    this.seen = true;
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const w of waiters) w();
+  }
+
+  /** Socket baru = handshake baru; sinyal di-reset tiap doConnect. */
+  reset(): void {
+    this.seen = false;
+    this.waiters = [];
+  }
+
+  /**
+   * true bila sinyal sudah terlihat (langsung bila sudah seen);
+   * false bila timeout habis tanpa sinyal. Satu wait = satu percobaan,
+   * tanpa retry tanpa batas.
+   */
+  wait(timeoutMs: number): Promise<boolean> {
+    if (this.seen) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const resolveTrue = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.waiters = this.waiters.filter((w) => w !== resolveTrue);
+        resolve(false);
+      }, timeoutMs);
+      this.waiters.push(resolveTrue);
+    });
+  }
+}
+
 function emitState(
   handlers: StateHandler[],
   state: EngineState,
@@ -214,6 +272,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
    * true = sesi sudah terdaftar (QR/kode tidak diperlukan lagi).
    */
   private registered: boolean | null = null;
+  /** Sinyal connection.update pertama dari socket aktif. */
+  private readonly readySignal = new ReadySignal();
 
   constructor(options: BaileysTransportOptions = {}) {
     // Sengaja TIDAK connect di sini. connect() eksplisit saja.
@@ -272,6 +332,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
 
   private async doConnect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
+    // Socket baru = handshake baru; sinyal readiness di-reset.
+    this.readySignal.reset();
     // Catat status registrasi: menentukan apakah pairing code valid.
     this.registered = state.creds.registered === true;
     const sock = makeWASocket({
@@ -284,6 +346,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", (update) => {
+      // Update pertama = bukti handshake berjalan (channel hidup).
+      this.readySignal.markSeen();
       const { connection, qr, lastDisconnect } = update;
       if (qr) {
         this.qr = qr;
@@ -363,6 +427,13 @@ export class BaileysTransport implements WaTransport, TransportControl {
    * Bila socket belum ada, connect() dulu (membuat socket + mulai
    * pairing); bila socket sudah ada (QR sedang menunggu), pakai
    * socket itu — jangan buat socket kedua.
+   * SEBELUM menembak requestPairingCode, socket WAJIB ready: tunggu
+   * connection.update pertama (maks PAIRING_READY_TIMEOUT_MS). Tanpa
+   * ini, query ditembak ke socket yang handshake-nya belum selesai
+   * dan Baileys throw -> 502 pairing_failed. Bila socket sudah punya
+   * QR (state pairing), anggap ready tanpa menunggu. Timeout ->
+   * throw Error("socket_not_ready"). Satu percobaan setelah ready,
+   * tanpa retry tanpa batas.
    */
   async requestPairingCode(phone: string): Promise<string> {
     if (this.isConnected()) {
@@ -376,6 +447,15 @@ export class BaileysTransport implements WaTransport, TransportControl {
     }
     if (!this.sock) {
       throw new Error("not_started");
+    }
+    if (this.getState() !== "pairing" && !this.readySignal.isSeen()) {
+      const ready = await this.readySignal.wait(PAIRING_READY_TIMEOUT_MS);
+      if (!ready) {
+        throw new Error("socket_not_ready");
+      }
+      if (!this.sock) {
+        throw new Error("not_started");
+      }
     }
     const code = await this.sock.requestPairingCode(phone);
     // Kode diminta -> user sedang dalam proses pairing, sama seperti

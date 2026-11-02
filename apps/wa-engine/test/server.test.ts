@@ -89,16 +89,13 @@ describe("endpoint wa-engine (mock)", () => {
     expect(transport.sent).toHaveLength(0);
   });
 
-  it("POST /start -> connected; /qr melaporkan connected + mock", async () => {
+  it("POST /start -> connected; /qr tanpa QR -> 404 no_qr (bukan JSON pura-pura gambar)", async () => {
     const start = await req("POST", "/start");
     expect(start.status).toBe(200);
     expect(start.json).toMatchObject({ state: "connected", connected: true });
     const qr = await req("GET", "/qr");
-    expect(qr.json).toMatchObject({
-      state: "connected",
-      qr: null,
-      mock: true,
-    });
+    expect(qr.status).toBe(404);
+    expect(qr.json).toMatchObject({ error: "no_qr" });
     const status = await req("GET", "/status");
     expect(status.json).toMatchObject({ queuePaused: false });
   });

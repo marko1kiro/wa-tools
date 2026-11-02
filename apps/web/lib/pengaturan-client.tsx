@@ -43,6 +43,9 @@ export default function PengaturanClient() {
   const [status, setStatus] = useState<StatusView | null>(null);
   const [statusError, setStatusError] = useState(false);
   const [qrBroken, setQrBroken] = useState(false);
+  // Cache-buster load QR: URL gambar QR harus segar tiap mount supaya
+  // browser tidak menyajikan cache gambar rusak lama (kasus QR JSON).
+  const [qrNonce] = useState(() => Date.now());
   // Kode pairing fallback (SPEC §3.1): BUKAN SMS OTP — kode ini
   // dimasukkan user di HP (Perangkat Tertaut -> Tautkan dengan nomor
   // telepon). Berlaku singkat; minta baru bila kedaluwarsa.
@@ -50,6 +53,7 @@ export default function PengaturanClient() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingDetail, setPairingDetail] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({ ...DEFAULTS });
   const [notice, setNotice] = useState<string | null>(null);
   // Pause GLOBAL antrean kirim (kontrak worker lain: settings key
@@ -99,6 +103,7 @@ export default function PengaturanClient() {
   async function requestPairingCode(e: React.FormEvent) {
     e.preventDefault();
     setPairingError(null);
+    setPairingDetail(null);
     setPairingBusy(true);
     try {
       const res = await fetch("/api/pairing-code", {
@@ -112,6 +117,11 @@ export default function PengaturanClient() {
       > | null;
       if (!res.ok || typeof data?.code !== "string") {
         const err = typeof data?.error === "string" ? data.error : "";
+        // Detail aman dari engine (mis. socket_not_ready / pesan Baileys)
+        // ditampilkan apa adanya di bawah pesan gagal.
+        if (typeof data?.detail === "string" && data.detail.length > 0) {
+          setPairingDetail(data.detail);
+        }
         setPairingError(
           err === "invalid_phone"
             ? "Nomor tidak valid — pakai digit dengan kode negara, tanpa + (mis. 62812xxxxxxx)."
@@ -121,7 +131,9 @@ export default function PengaturanClient() {
                 ? "Akun ini sudah terdaftar — pakai sesi yang ada (atau scan QR)."
                 : err === "engine_unreachable" || err === "engine_unconfigured"
                   ? "Engine tidak bisa dihubungi — pastikan wa-engine jalan."
-                  : "Gagal meminta kode pairing. Coba lagi.",
+                  : err === "socket_not_ready"
+                    ? "Socket WhatsApp belum siap — coba lagi sebentar."
+                    : "Gagal meminta kode pairing. Coba lagi.",
         );
         return;
       }
@@ -251,7 +263,7 @@ export default function PengaturanClient() {
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src="/api/qr-proxy"
+              src={`/api/qr-proxy?t=${qrNonce}`}
               alt="QR pairing WhatsApp"
               onError={() => setQrBroken(true)}
               className="h-56 w-56 rounded-lg border object-contain"
@@ -282,6 +294,9 @@ export default function PengaturanClient() {
           </form>
           {pairingError && (
             <p className="mt-2 text-sm text-red-700">{pairingError}</p>
+          )}
+          {pairingDetail && (
+            <p className="mt-1 text-xs text-zinc-500">{pairingDetail}</p>
           )}
           {pairingCode && (
             <div className="mt-3">

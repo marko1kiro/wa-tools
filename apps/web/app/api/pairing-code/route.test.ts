@@ -57,6 +57,21 @@ describe("POST /api/pairing-code", () => {
     expect(await res.json()).toMatchObject({ error: "already_connected" });
   });
 
+  it("engine 502 dengan detail -> detail diteruskan ke dashboard", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(502, {
+        error: "socket_not_ready",
+        detail: "Socket WhatsApp belum siap (handshake belum selesai dalam 15 detik). Coba lagi.",
+      }),
+    ));
+    const res = await POST(postReq({ phone: "628123456789" }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({
+      error: "socket_not_ready",
+      detail: expect.stringContaining("belum siap"),
+    });
+  });
+
   it("engine tidak bisa dihubungi -> 503, tanpa kode palsu", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("conn refused");

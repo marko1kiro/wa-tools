@@ -14,13 +14,18 @@ export async function GET() {
     if (!res.ok) {
       return NextResponse.json(
         { error: `Engine tidak menyediakan QR (HTTP ${res.status})` },
-        { status: 503 },
+        { status: 503, headers: { "cache-control": "no-store" } },
       );
     }
     const buf = await res.arrayBuffer();
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
-    return new NextResponse(buf, { headers: { "content-type": contentType } });
+    return new NextResponse(buf, {
+      headers: { "content-type": contentType, "cache-control": "no-store" },
+    });
   } catch {
-    return NextResponse.json({ error: "Engine WhatsApp tidak dapat dihubungi" }, { status: 503 });
+    return NextResponse.json(
+      { error: "Engine WhatsApp tidak dapat dihubungi" },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
   }
 }

@@ -34,8 +34,13 @@ export async function POST(req: Request) {
     });
     const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (!res.ok) {
+      // Detail aman dari engine diteruskan apa adanya (mis. socket_not_ready
+      // atau pesan Baileys); dashboard menampilkannya di bawah pesan gagal.
       return NextResponse.json(
-        { error: typeof data?.error === "string" ? data.error : "pairing_failed" },
+        {
+          error: typeof data?.error === "string" ? data.error : "pairing_failed",
+          ...(typeof data?.detail === "string" ? { detail: data.detail } : {}),
+        },
         { status: res.status },
       );
     }

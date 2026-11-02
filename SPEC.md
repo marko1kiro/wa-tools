@@ -39,6 +39,23 @@ pihak ketiga (kecuali gateway AI yang user tunjuk sendiri).
    Setelah tertaut (via QR maupun kode), sesi tersimpan sama dan
    reconnect otomatis tanpa QR/kode lagi. Status koneksi realtime,
    reconnect otomatis, tampilkan nomor yang terhubung.
+   - **Auto-connect mode real (perbaikan 2026-11-02):** engine mode real
+     (`WA_ENGINE_MOCK=0`) auto-connect saat boot — habis laptop restart,
+     engine langsung jaga koneksi tanpa menunggu dashboard memanggil
+     `/start` (mode mock tetap manual via `/start`). Gagal auto-connect
+     awal hanya di-log, tanpa restart loop.
+   - **QR sebagai PNG (perbaikan 2026-11-02):** `GET /qr` engine
+     mengembalikan PNG beneran (render string QR Baileys via library
+     `qrcode`); tanpa QR aktif -> 404 `{error:"no_qr"}`.
+   - **Readiness pairing code (perbaikan 2026-11-02):**
+     `requestPairingCode` menunggu connection.update pertama (bukti
+     handshake berjalan, timeout 15 detik); bila socket sudah punya QR
+     (state pairing), anggap ready. Timeout -> error `socket_not_ready`
+     (502 + detail), bukan `pairing_failed` generik.
+   - **Detail error (perbaikan 2026-11-02):** respons error
+     `/pairing-code` menyertakan `detail` aman (pesan Baileys +
+     statusCode bila ada, tanpa kredensial/session); dashboard
+     menampilkannya di bawah pesan gagal.
 2. **Inbox + Chat** — daftar chat + isi percakapan dari data asli,
    mengikuti layout mockup yang sudah di-approve (replica WA Web +
    Omnibox `/` di composer).
@@ -223,3 +240,18 @@ jalan di background, tahan banting. Bukan console yang harus dibuka manual.
   dashboard Pengaturan + `services.msc`.
 - **Update:** `git pull` dari root repo lalu
   `Restart-Service -Name wa-tools-engine` (butuh shell elevated).
+
+### Perbaikan koneksi (2026-11-02, sudah di repo)
+
+- **Auto-connect mode real:** engine `WA_ENGINE_MOCK=0` auto-connect
+  saat boot (gagal awal hanya di-log); mode mock tetap manual via
+  `/start`.
+- **QR PNG:** `GET /qr` mengembalikan `image/png` (no-store); tanpa QR
+  -> 404 `{error:"no_qr"}`; qr-proxy meneruskan body + content-type
+  dengan header no-cache; dashboard memakai cache-buster tiap load.
+- **Readiness pairing:** `requestPairingCode` menunggu connection.update
+  pertama (timeout 15 detik, konstanta `PAIRING_READY_TIMEOUT_MS`);
+  timeout -> `socket_not_ready` (502 + detail).
+- **Detail error:** `/pairing-code` mengembalikan `detail` aman
+  (pesan + statusCode Baileys); proxy + dashboard meneruskan dan
+  menampilkannya.

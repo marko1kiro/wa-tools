@@ -67,14 +67,19 @@ pnpm dev:engine
 
 Di dashboard → Pengaturan → kartu Status WhatsApp:
 
-- **QR (utama):** scan QR yang tampil di dashboard dari HP
-  (WhatsApp → Perangkat Tertaut → Tautkan perangkat).
+- **QR (utama):** engine mode real auto-connect saat boot, lalu QR
+  tampil sebagai gambar PNG di dashboard — scan dari HP
+  (WhatsApp → Perangkat Tertaut → Tautkan perangkat). Bila kotak QR
+  kosong, refresh halaman (QR di-load segar tiap buka, tanpa cache).
 - **Kode pairing (fallback bila QR bermasalah):** klik "Gunakan kode
   pairing", isi nomor HP (digit dengan kode negara, tanpa `+`, mis.
-  `62812xxxxxxx`), tekan "Minta kode" — kode 8 digit tampil besar di
-  dashboard, masukkan di HP (WhatsApp → Perangkat Tertaut → Tautkan
-  dengan nomor telepon). **Ini BUKAN SMS OTP** — tidak ada SMS yang
-  dikirim; kodenya hanya jembatan pairing Baileys.
+  `62812xxxxxxx`), tekan "Minta kode" — engine menunggu socket ready
+  dulu (maks 15 detik) sebelum meminta kode ke WhatsApp; kode 8 digit
+  tampil besar di dashboard, masukkan di HP (WhatsApp → Perangkat
+  Tertaut → Tautkan dengan nomor telepon). **Ini BUKAN SMS OTP** — tidak ada SMS yang
+  dikirim; kodenya hanya jembatan pairing Baileys. Bila gagal, dashboard
+  menampilkan detail error dari engine (mis. socket belum siap) di bawah
+  pesan gagal — bukan sekadar "coba lagi".
 - Kode berlaku singkat; bila kedaluwarsa, tekan "Minta kode baru"
   (kode baru berbeda dari sebelumnya).
 - Setelah tertaut (via QR maupun kode), sesi tersimpan di folder auth
