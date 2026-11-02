@@ -39,6 +39,13 @@ pihak ketiga (kecuali gateway AI yang user tunjuk sendiri).
    Setelah tertaut (via QR maupun kode), sesi tersimpan sama dan
    reconnect otomatis tanpa QR/kode lagi. Status koneksi realtime,
    reconnect otomatis, tampilkan nomor yang terhubung.
+   Konfigurasi socket mengikuti skill whatsapp-baileys: versi terbaru
+   via `fetchLatestBaileysVersion` (fallback default bila fetch gagal),
+   `syncFullHistory: false`, `markOnlineOnConnect: false`,
+   `connectTimeoutMs: 60000`, `keepAliveIntervalMs: 30000`,
+   browser `WhatsApp Tools`; reconnect backoff 3 detik eksponensial
+   (mentok 60 detik); dashboard me-refresh QR + status tiap 5 detik
+   selama belum connected.
    - **Auto-connect mode real (perbaikan 2026-11-02):** engine mode real
      (`WA_ENGINE_MOCK=0`) auto-connect saat boot — habis laptop restart,
      engine langsung jaga koneksi tanpa menunggu dashboard memanggil

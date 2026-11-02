@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
+  Browsers,
   DisconnectReason,
+  fetchLatestBaileysVersion,
   makeWASocket,
   useMultiFileAuthState,
   type WAMessage,
@@ -142,6 +144,16 @@ function emitState(
   }
 }
 
+/**
+ * Jeda reconnect otomatis (skill whatsapp-baileys: hindari loop reconnect
+ * rapat): mulai 3 detik, backoff eksponensial, mentok 60 detik. Pure,
+ * bisa di-unit-test.
+ */
+export function reconnectDelayMs(attempt: number): number {
+  if (attempt <= 0) return 3000;
+  return Math.min(3000 * 2 ** attempt, 60000);
+}
+
 // ---------------------------------------------------------------------------
 // Konversi WAMessage Baileys -> IncomingMessage (pure, bisa di-unit-test).
 // Media TIDAK di-download di sini (media handler DIPARKIR, SPEC §4);
@@ -256,6 +268,8 @@ export class BaileysTransport implements WaTransport, TransportControl {
   private phone: string | null = null;
   private stopped = false;
   private connecting: Promise<void> | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private readonly authDir: string;
   private readonly messageHandlers: MessageHandler[] = [];
   private readonly stateHandlers: StateHandler[] = [];
@@ -336,10 +350,28 @@ export class BaileysTransport implements WaTransport, TransportControl {
     this.readySignal.reset();
     // Catat status registrasi: menentukan apakah pairing code valid.
     this.registered = state.creds.registered === true;
+    // Opsi socket per skill whatsapp-baileys (anti 405/408): versi
+    // terbaru dari server, tanpa full history sync, tanpa mark online,
+    // timeout longgar. Fetch versi gagal (offline) -> fallback ke
+    // default library, koneksi tetap dicoba.
+    let version:
+      | Awaited<ReturnType<typeof fetchLatestBaileysVersion>>["version"]
+      | undefined;
+    try {
+      version = (await fetchLatestBaileysVersion()).version;
+    } catch {
+      version = undefined;
+    }
     const sock = makeWASocket({
       auth: state,
+      version,
       // QR tidak di-print ke terminal; UI mengambilnya via GET /qr.
       printQRInTerminal: false,
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 30000,
+      browser: Browsers.windows("WhatsApp Tools"),
     });
     this.sock = sock;
 
@@ -355,6 +387,12 @@ export class BaileysTransport implements WaTransport, TransportControl {
       }
       if (connection === "open") {
         this.qr = null;
+        // Koneksi sukses: reset backoff + batalkan timer reconnect sisa.
+        this.reconnectAttempts = 0;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         // user.id berbentuk "628xx@s.whatsapp.net" (atau "xxx:yy@lid").
         const rawId = sock.user?.id ?? null;
         this.phone = rawId
@@ -377,14 +415,22 @@ export class BaileysTransport implements WaTransport, TransportControl {
         this.watchdogArmed = !this.stopped;
         this.setState("disconnected");
         // Reconnect otomatis (SPEC §3.1), kecuali logout eksplisit
-        // atau stop() sudah dipanggil.
+        // atau stop() sudah dipanggil. Backoff eksponensial (skill
+        // whatsapp-baileys: hindari loop reconnect rapat) + timer
+        // dilacak supaya stop manual bisa membatalkannya.
         if (!loggedOut && !this.stopped) {
-          setTimeout(() => {
+          const delay = reconnectDelayMs(this.reconnectAttempts);
+          this.reconnectAttempts += 1;
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            // Stop manual yang datang setelah timer dijadwalkan harus
+            // tetap dihormati (timer basi tidak boleh menghidupkan lagi).
+            if (this.stopped) return;
             void this.connect().catch(() => {
               // Gagal reconnect: state tetap disconnected sampai
               // /start berikutnya; tidak ada throw yang tak tertangani.
             });
-          }, 3000);
+          }, delay);
         }
       }
     });
@@ -406,6 +452,12 @@ export class BaileysTransport implements WaTransport, TransportControl {
 
   async disconnect(): Promise<void> {
     this.stopped = true;
+    // Batalkan timer reconnect yang mungkin masih pending supaya
+    // stop manual benar-benar menghentikan koneksi.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const sock = this.sock;
     this.sock = null;
     this.qr = null;

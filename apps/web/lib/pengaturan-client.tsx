@@ -66,27 +66,33 @@ export default function PengaturanClient() {
   // queue_paused dibaca antrean engine — bukan status per-jadwal).
   const [queuePaused, setQueuePaused] = useState(false);
 
+  // Ambil status engine (dipakai mount + polling QR di bawah).
+  async function refreshStatus(): Promise<void> {
+    try {
+      const res = await fetch("/api/status");
+      const data: unknown = res.ok ? await res.json() : null;
+      if (data && typeof data === "object") {
+        const d = data as Record<string, unknown>;
+        setStatus({
+          engineUp: d.engineUp === true,
+          waState: typeof d.waState === "string" ? d.waState : null,
+          phone: typeof d.phone === "string" ? d.phone : null,
+          queuePaused: d.queuePaused === true,
+          uptimeSeconds:
+            typeof d.uptimeSeconds === "number" ? d.uptimeSeconds : null,
+          lastDisconnectAt:
+            typeof d.lastDisconnectAt === "string" ? d.lastDisconnectAt : null,
+        });
+      } else {
+        setStatusError(true);
+      }
+    } catch {
+      setStatusError(true);
+    }
+  }
+
   useEffect(() => {
-    fetch("/api/status")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: unknown) => {
-        if (data && typeof data === "object") {
-          const d = data as Record<string, unknown>;
-          setStatus({
-            engineUp: d.engineUp === true,
-            waState: typeof d.waState === "string" ? d.waState : null,
-            phone: typeof d.phone === "string" ? d.phone : null,
-            queuePaused: d.queuePaused === true,
-            uptimeSeconds:
-              typeof d.uptimeSeconds === "number" ? d.uptimeSeconds : null,
-            lastDisconnectAt:
-              typeof d.lastDisconnectAt === "string" ? d.lastDisconnectAt : null,
-          });
-        } else {
-          setStatusError(true);
-        }
-      })
-      .catch(() => setStatusError(true));
+    void refreshStatus();
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((data: unknown) => {
@@ -105,6 +111,22 @@ export default function PengaturanClient() {
       })
       .catch(() => undefined);
   }, []);
+
+  // Refresh QR + status tiap 5 detik selama belum connected (skill
+  // whatsapp-baileys: QR di-refresh otomatis). Alasan: QR Baileys bisa
+  // berganti saat reconnect, dan load pertama bisa balapan dengan
+  // engine yang baru start — tanpa refresh, QR basi/rusak nempel di
+  // layar. qrBroken ikut di-reset supaya <img> mencoba lagi begitu
+  // QR baru tersedia. Berhenti sendiri saat sudah connected.
+  useEffect(() => {
+    if (status?.waState === "connected") return;
+    const t = setInterval(() => {
+      setQrBroken(false);
+      setQrNonce(Date.now());
+      void refreshStatus();
+    }, 5000);
+    return () => clearInterval(t);
+  }, [status?.waState]);
 
   async function requestPairingCode(e: React.FormEvent) {
     e.preventDefault();
@@ -262,7 +284,11 @@ export default function PengaturanClient() {
         </label>
         <div className="mt-4">
           <h3 className="mb-2 text-sm font-semibold">QR pairing</h3>
-          {qrBroken ? (
+          {status?.waState === "connected" ? (
+            <p className="text-sm text-zinc-500">
+              WhatsApp sudah terhubung — QR tidak diperlukan.
+            </p>
+          ) : qrBroken ? (
             <p className="text-sm text-zinc-500">
               QR tidak tersedia — engine belum jalan atau belum ada QR aktif.
             </p>
