@@ -45,7 +45,13 @@ export default function PengaturanClient() {
   const [qrBroken, setQrBroken] = useState(false);
   // Cache-buster load QR: URL gambar QR harus segar tiap mount supaya
   // browser tidak menyajikan cache gambar rusak lama (kasus QR JSON).
-  const [qrNonce] = useState(() => Date.now());
+  // Nilai awal null + di-set di useEffect (hanya jalan di client):
+  // Date.now() langsung di render menyebabkan hydration mismatch
+  // (server dan client menghasilkan timestamp berbeda).
+  const [qrNonce, setQrNonce] = useState<number | null>(null);
+  useEffect(() => {
+    setQrNonce(Date.now());
+  }, []);
   // Kode pairing fallback (SPEC §3.1): BUKAN SMS OTP — kode ini
   // dimasukkan user di HP (Perangkat Tertaut -> Tautkan dengan nomor
   // telepon). Berlaku singkat; minta baru bila kedaluwarsa.
@@ -263,7 +269,11 @@ export default function PengaturanClient() {
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={`/api/qr-proxy?t=${qrNonce}`}
+              src={
+                qrNonce === null
+                  ? "/api/qr-proxy"
+                  : `/api/qr-proxy?t=${qrNonce}`
+              }
               alt="QR pairing WhatsApp"
               onError={() => setQrBroken(true)}
               className="h-56 w-56 rounded-lg border object-contain"
